@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+qdrant-client
+pymupdf
+python-docx
+openpyxl
+pytesseract
+opencv-python
+pillow
+sentence-transformers
+spacy
+numpy
+pandas
+scikit-learn
