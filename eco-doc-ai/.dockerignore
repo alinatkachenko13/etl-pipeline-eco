@@ -1,0 +1,14 @@
+.git
+.idea
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+.venv/
+venv/
+.DS_Store
+data/
+samples/
+cvat/
+*.tar
+answers.csv
+results/

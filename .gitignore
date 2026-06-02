@@ -1,0 +1,18 @@
+.DS_Store
+.idea/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# тяжёлые и локальные артефакты eco-doc-ai (не для GitHub)
+eco-doc-ai/cvat/
+eco-doc-ai/data/
+eco-doc-ai/samples/
+eco-doc-ai/results/
+eco-doc-ai/.venv/
+eco-doc-ai/*.tar
+answers.csv
+eco-doc-ai/answers.csv

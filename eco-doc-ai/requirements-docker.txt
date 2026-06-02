@@ -1,0 +1,15 @@
+# образ с docling (как локально); pdf: docling с fallback на pymupdf+ocr
+fastapi
+uvicorn
+python-multipart
+docling>=2.0.0
+pymupdf
+python-docx
+openpyxl
+pillow
+paddleocr
+opencv-python-headless
+numpy
+pandas
+scikit-learn
+striprtf
