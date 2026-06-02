@@ -1,5 +1,6 @@
 fastapi
 uvicorn
+python-multipart
 docling>=2.0.0
 pymupdf
 python-docx

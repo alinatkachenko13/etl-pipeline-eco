@@ -15,7 +15,9 @@ from docx import Document
 
 from pdf_page_quality import (
     evaluate_page_text_quality,
+    page_has_embedded_images,
     postprocess_ocr_text,
+    should_attempt_ocr,
     try_complementary_merge,
 )
 
@@ -38,8 +40,7 @@ class PdfExtractionConfig:
     извлечение pdf по страницам; параметры меняйте здесь, без правки внутренностей parse_pdf.
 
     атрибуты:
-        min_native_chars: минимальная длина нативного текста, ниже — пробуем ocr.
-        min_native_quality_score: 0..1 из evaluate_page_text_quality; ниже — пробуем ocr.
+        min_native_quality_score: порог качества нативного текста (метаданные страницы).
         max_ocr_pages_per_document: лимит вызовов ocr (none = без лимита).
         ocr_dpi: dpi растра для ocr.
         ocr_score_advantage: ocr должен обогнать натив по score минимум на эту величину.
@@ -49,7 +50,6 @@ class PdfExtractionConfig:
             pymupdf — прежний пайплайн pymupdf + paddleocr по страницам.
     """
 
-    min_native_chars: int = 80
     min_native_quality_score: float = 0.38
     max_ocr_pages_per_document: int | None = None
     ocr_dpi: int = 150
@@ -439,12 +439,8 @@ def _parse_pdf_pymupdf(path: str, config: PdfExtractionConfig | None = None) -> 
             page_num = i + 1
             native_raw = page.get_text("text").strip()
             qn = evaluate_page_text_quality(native_raw)
-
-            native_ok = (
-                qn.char_len >= cfg.min_native_chars
-                and qn.score >= cfg.min_native_quality_score
-                and not qn.suspicious_repeat
-            )
+            has_images = page_has_embedded_images(page)
+            need_ocr, ocr_reason = should_attempt_ocr(native_raw, has_images)
 
             ocr_applied = False
             reason_for_ocr: str | None = None
@@ -452,7 +448,7 @@ def _parse_pdf_pymupdf(path: str, config: PdfExtractionConfig | None = None) -> 
             mode = "native"
             ocr_clean = ""
 
-            if native_ok:
+            if not need_ocr:
                 final_text = native_raw
                 mode = "native"
                 logger.debug(
@@ -463,14 +459,7 @@ def _parse_pdf_pymupdf(path: str, config: PdfExtractionConfig | None = None) -> 
                     qn.score,
                 )
             else:
-                if qn.char_len < cfg.min_native_chars:
-                    reason_for_ocr = "short_native"
-                elif qn.suspicious_repeat:
-                    reason_for_ocr = "suspicious_native"
-                elif qn.score < cfg.min_native_quality_score:
-                    reason_for_ocr = "low_quality_native"
-                else:
-                    reason_for_ocr = "native_failed_heuristic"
+                reason_for_ocr = ocr_reason
 
                 budget_ok = True
                 if cfg.max_ocr_pages_per_document is not None:
@@ -570,9 +559,9 @@ def _parse_pdf_pymupdf(path: str, config: PdfExtractionConfig | None = None) -> 
             q_final = evaluate_page_text_quality(final_text)
             if mode == "failed" or not final_text:
                 quality_flag = "failed"
-            elif mode == "native" and not native_ok:
+            elif mode == "native" and qn.score < cfg.min_native_quality_score:
                 quality_flag = "low"
-            elif q_final.score < 0.32 and q_final.char_len > 40:
+            elif q_final.score < 0.32 and len((final_text or "").strip()) > 40:
                 quality_flag = "low"
             else:
                 quality_flag = "ok"
@@ -587,7 +576,7 @@ def _parse_pdf_pymupdf(path: str, config: PdfExtractionConfig | None = None) -> 
                 "final_quality_score": round(q_final.score, 4),
                 "ocr_applied": ocr_applied,
                 "quality_flag": quality_flag,
-                "reason_for_ocr": reason_for_ocr if not native_ok else None,
+                "reason_for_ocr": reason_for_ocr if need_ocr else None,
             }
             pages_out.append(page_entry)
 

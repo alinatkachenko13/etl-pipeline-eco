@@ -1,151 +1,54 @@
 # Eco Doc AI
 
-## О проекте
+Парсинг экологических документов (PDF, DOCX, сканы) и ответы на вопросы по тексту томов. FastAPI + офлайн-сбор `answers.csv`.
 
-`Eco Doc AI` — это базовая платформа для интеллектуальной обработки экологической и природоохранной документации: парсинг файлов, разбиение текста, поиск релевантных фрагментов, формирование ответов и саммари.
+## Данные
 
-Проект соответствует ключевой идее брифа, но в текущем виде это **MVP/демо-основа**, а не полный production-контур.
+В git нет папки `data/` — её кладёте локально. Ожидаемая структура:
 
-## Соответствие брифу
+```
+eco-doc-ai/data/raw/Хакатон_last/
+├── Данные для обучения/train.csv
+└── Данные для тестирования/test.csv
+    └── … тома проектов (Word/PDF)
+```
 
-В репозитории уже есть:
+Без `data/` скрипт сдачи не запустится; API не найдёт файл по названию из колонки «Документ».
 
-- сбор и подготовка корпуса документов;
-- парсинг неструктурированных и полуструктурированных форматов;
-- RAG-подобный пайплайн: разбор → чанки → поиск → экстрактивный ответ/саммари;
-- минимальный HTTP API для загрузки документа и запросов.
-
-Пока **не реализованы** (как отдельные полноценные подсистемы):
-
-- дообучение LLM;
-- выделение требований как сущностей;
-- интеграция в внешний UI-прототип;
-- оценка эффекта в процентах по целевым KPI из брифа (для этого нужен пилот и замеры).
-
-## Для кого
-
-Экологи-проектировщики и специалисты, которым нужно быстро находить нужные фрагменты в документах заказчика и получать выжимки по содержимому.
-
-## Что реализовано
-
-### 1) Подготовка данных
-
-- Сбор корпуса из `data/raw` в JSON-документы и `manifest.jsonl`.
-- Конвертация train/test CSV в QA JSONL.
-- Основной модуль: `src/utils.py`.
-
-### 2) Парсинг документов и изображений
-
-Поддерживаются:
-
-- документы: **PDF, DOCX, TXT, RTF, DOC (macOS), XLS/XLSX**;
-- изображения: **JPG, PNG, HEIC** (через OCR).
-
-Особенности:
-
-- для PDF/DOCX можно использовать **Docling** (лучше для сложной верстки и таблиц);
-- fallback для PDF: **PyMuPDF + PaddleOCR**.
-
-Основной модуль: `src/parsers.py`.
-
-### 3) Чанки, саммари, поиск и ответы
-
-- Разбиение на чанки и саммаризация без LLM (TextRank по TF-IDF предложений): `src/chunk_and_summarize.py`.
-- Поиск по одному загруженному документу: TF-IDF по чанкам.
-- Ответ: экстрактивная сборка релевантных предложений (без свободной генерации).
-- Основной модуль: `src/memory_rag.py`.
-
-### 4) API-прототип
-
-- FastAPI-сервис для:
-  - загрузки файла,
-  - вопроса по документу,
-  - получения саммари.
-- Модули: `src/app.py`, запуск через `./run_api.sh`.
-- Индекс хранится в памяти процесса (после перезапуска файл нужно загрузить заново).
-
-### 5) Офлайн-артефакты по корпусу
-
-Команда `python chunk_and_summarize.py` генерирует:
-
-- `samples/corpus/chunks.jsonl`,
-- `samples/corpus/summaries.jsonl`.
-
-## Структура проекта
-
-- `src/parsers.py` — извлечение текста и маршрутизация по форматам (Docling/PyMuPDF).
-- `src/pdf_page_quality.py` — эвристики качества PDF-страниц (ветка PyMuPDF).
-- `src/ocr.py` — обертка над PaddleOCR.
-- `src/chunk_and_summarize.py` — чанки и TextRank-саммари.
-- `src/memory_rag.py` — индекс и retrieval по одному документу.
-- `src/app.py` — REST API.
-- `src/utils.py`, `src/corpus_storage.py` — сбор корпуса и QA JSONL.
-- `src/build_submission_answers.py` — сбор `answers.csv` для сдачи (RAG + fallback train).
-- `src/generate_answers.py` — baseline для `answers.csv` только по train/test.
-- `data/raw/` — исходные материалы.
-- `samples/corpus/`, `samples/qa/` — артефакты обработки.
-- `docs/mvp_definition.md`, `docs/architecture.md` — описание MVP и архитектуры.
-
-## Быстрый старт API
+## Установка
 
 ```bash
 cd eco-doc-ai
-python3 -m pip install -r requirements.txt
-./run_api.sh
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+./run_api.sh          # http://127.0.0.1:8000/docs
 ```
 
-Swagger UI:  
-[http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
-
-Типовой сценарий:
-
-1. загрузить файл;
-2. получить `document_id`;
-3. отправлять вопросы с `document_id`;
-4. отдельно запрашивать summary.
-
-### Выбор PDF-движка
-
-По умолчанию:
+Сбор ответов на весь test:
 
 ```bash
-ECO_DOC_PDF_ENGINE=pymupdf
+cd src && python build_submission_answers.py
 ```
 
-Для сложной верстки можно переключиться на Docling:
+→ `eco-doc-ai/answers.csv`
 
-```bash
-export ECO_DOC_PDF_ENGINE=docling
-```
+## Логика
 
-## Офлайн-обработка корпуса
+1. **Парсер** — PDF, DOCX, TXT, Excel, изображения; OCR на страницах-сканах.
+2. **Вопрос с томом** — по названию из «Документ» открывается файл, ответ из релевантных чанков текста.
+3. **«Документ» = Нет** — в скрипте сдачи ответ берётся из **train.csv** (похожий вопрос, TF-IDF).
 
-```bash
-cd eco-doc-ai/src
-python utils.py
-python chunk_and_summarize.py
-```
+Ответы без LLM: текст режется на **чанки** (~2000 символов, с перекрытием), по вопросу выбираются самые релевантные куски.
 
-## Быстрая сборка `answers.csv`
+## API
 
-Из каталога `eco-doc-ai/src` (нужны `train.csv`, `test.csv` и документы Word в `data/raw/.../Проект Word/`):
+| Метод | Путь |
+|-------|------|
+| POST | `/parse` |
+| POST | `/question` |
 
-```bash
-python build_submission_answers.py
-```
+Подробнее: `docs/TZ_API.md`. Docker: `docker compose up --build`.
 
-Результат: `eco-doc-ai/answers.csv`.
+## Код
 
-Логика:
-
-- для вопросов с указанным документом (например, «Книга 1/2 Эко Агро») — извлечение ответа из текста тома через RAG;
-- для `Нет` и при ошибках парсинга — fallback на train (baseline).
-
-Только baseline (без парсинга документов):
-
-```bash
-python generate_answers.py \
-  --train "../data/raw/Хакатон_last/Данные для обучения/train.csv" \
-  --test "../data/raw/Хакатон_last/Данные для тестирования/test.csv" \
-  --out ../answers.csv
-```
+`parsers.py` · `text_chunks.py` · `document_store.py` · `document_resolver.py` · `app.py` · `build_submission_answers.py`
