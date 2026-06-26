@@ -139,7 +139,8 @@ def health():
 
 @app.get("/documents")
 def documents_list():
-    return {"document_ids": list_document_ids(), "count": len(list_document_ids())}
+    ids = list_document_ids()
+    return {"document_ids": ids, "count": len(ids)}
 
 
 @app.post("/parse", response_model=ParseResponse)
@@ -183,7 +184,8 @@ def ask_question(req: QuestionRequest):
             )
         doc_id = _store_from_path(path)
         rec = get_record(doc_id)
-        assert rec
+        if rec is None:
+            raise HTTPException(status_code=500, detail="документ сохранён, но не найден в хранилище")
         resp = _answer_for_record(q, rec, req.top_k)
         resp.document = doc_label
         return resp
