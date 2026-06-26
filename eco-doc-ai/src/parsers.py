@@ -1,7 +1,6 @@
 import logging
 import os
 import platform
-import re
 import subprocess
 import tempfile
 import uuid
@@ -20,6 +19,7 @@ from pdf_page_quality import (
     should_attempt_ocr,
     try_complementary_merge,
 )
+from text_chunks import normalize_text
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic"}
 
@@ -58,13 +58,6 @@ class PdfExtractionConfig:
     page_marker: str = DEFAULT_PAGE_MARKER
     pdf_engine: str = "docling"
 
-# убираем лишние пробелы и переносы
-def _clean_whitespace(text: str) -> str:
-    text = (text or "").replace("\r", "\n")
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
-
 # функция для декодирования
 def _read_text_with_fallbacks(path: str, encodings: tuple[str, ...]) -> str:
     raw = Path(path).read_bytes()
@@ -99,8 +92,6 @@ def _pdf_page_to_png(page: fitz.Page, dpi: int = 150) -> Path:
     mat = fitz.Matrix(dpi / 72, dpi / 72)
     pix = page.get_pixmap(matrix=mat, alpha=False)
     fd, tmp_path = tempfile.mkstemp(suffix=".png")
-    import os
-
     os.close(fd)
     pix.save(tmp_path)
     return Path(tmp_path)
@@ -143,7 +134,7 @@ def _pick_native_vs_ocr(
     if not n and not o:
         return "", "failed"
     if not o:
-        return native_raw.strip(), "native" if n else "failed"
+        return native_raw.strip(), "native"
     if not n:
         return ocr_clean.strip(), "ocr"
 
@@ -186,7 +177,8 @@ def get_docling_converter():
     return _docling_converter
 
 
-def _docling_table_as_pipe_rows(tbl: dict) -> list[str]:
+def _docling_table_rows(tbl: dict) -> list[tuple[int, list[str]]]:
+    """строки таблицы docling: (индекс строки, ячейки по порядку столбцов)."""
     data = tbl.get("data") or {}
     cells = data.get("table_cells") or []
     if not cells:
@@ -198,12 +190,16 @@ def _docling_table_as_pipe_rows(tbl: dict) -> list[str]:
         r = int(c.get("start_row_offset_idx", 0))
         col = int(c.get("start_col_offset_idx", 0))
         txt = (c.get("text") or "").replace("\n", " ").strip()
-        by_row.setdefault(r, []).append((col, txt))
-    lines: list[str] = []
+        by_row[r].append((col, txt))
+    rows: list[tuple[int, list[str]]] = []
     for r in sorted(by_row.keys()):
         row_cells = [t for _, t in sorted(by_row[r], key=lambda x: x[0])]
-        lines.append(" | ".join(row_cells))
-    return lines
+        rows.append((r, row_cells))
+    return rows
+
+
+def _docling_table_as_pipe_rows(tbl: dict) -> list[str]:
+    return [" | ".join(cells) for _, cells in _docling_table_rows(tbl)]
 
 
 def _docling_dict_tables_to_eco(tbls: list) -> list[dict]:
@@ -211,22 +207,10 @@ def _docling_dict_tables_to_eco(tbls: list) -> list[dict]:
     for table_idx, tbl in enumerate(tbls or []):
         if not isinstance(tbl, dict):
             continue
-        data = tbl.get("data") or {}
-        cells = data.get("table_cells") or []
-        if not cells:
+        rows = _docling_table_rows(tbl)
+        if not rows:
             continue
-        by_row: dict[int, list[tuple[int, str]]] = defaultdict(list)
-        for c in cells:
-            if not isinstance(c, dict):
-                continue
-            r = int(c.get("start_row_offset_idx", 0))
-            col = int(c.get("start_col_offset_idx", 0))
-            txt = (c.get("text") or "").replace("\n", " ").strip()
-            by_row.setdefault(r, []).append((col, txt))
-        table_rows: list[dict] = []
-        for r in sorted(by_row.keys()):
-            row_cells = [t for _, t in sorted(by_row[r], key=lambda x: x[0])]
-            table_rows.append({"row_num": r + 1, "cells": row_cells})
+        table_rows = [{"row_num": r + 1, "cells": cells} for r, cells in rows]
         out.append({"table_num": table_idx + 1, "rows": table_rows})
     return out
 
@@ -365,10 +349,10 @@ def _parse_with_docling(path: str, record_file_type: str, page_marker: str) -> d
     for p in pages_out:
         text_parts.append(page_marker.format(n=p["page_num"]))
         body = p["text"] or ""
-        text_parts.append(_clean_whitespace(body) if body else "")
+        text_parts.append(normalize_text(body) if body else "")
 
     assembled = "".join(text_parts).strip()
-    out["text"] = _clean_whitespace(assembled)
+    out["text"] = normalize_text(assembled)
     out["pages"] = pages_out
     out["tables"] = _docling_dict_tables_to_eco(data.get("tables"))
     out["paragraphs"] = _paragraphs_from_docling_texts(data)
@@ -584,10 +568,10 @@ def _parse_pdf_pymupdf(path: str, config: PdfExtractionConfig | None = None) -> 
         for p in pages_out:
             text_parts.append(cfg.page_marker.format(n=p["page_num"]))
             body = p["text"] or ""
-            text_parts.append(_clean_whitespace(body) if body else "")
+            text_parts.append(normalize_text(body) if body else "")
 
         assembled = "".join(text_parts).strip()
-        out["text"] = _clean_whitespace(assembled)
+        out["text"] = normalize_text(assembled)
         out["pages"] = pages_out
 
         any_ocr = ocr_invocations > 0
@@ -665,7 +649,7 @@ def _parse_docx_python_docx(path: str) -> dict:
     """запасной путь docx (python-docx), если docling недоступен или упал."""
     out = _make_base_result(path, "docx")
     paragraphs, tables, text = _docx_paragraphs_and_tables(path)
-    out["text"] = _clean_whitespace(text)
+    out["text"] = normalize_text(text)
     out["paragraphs"] = paragraphs
     out["tables"] = tables
     return out
@@ -692,7 +676,7 @@ def parse_docx(path: str) -> dict:
 def parse_txt(path: str) -> dict:
     out = _make_base_result(path, "txt")
     text = _read_text_with_fallbacks(path, ("utf-8", "cp1251", "latin-1")).strip()
-    out["text"] = _clean_whitespace(text)
+    out["text"] = normalize_text(text)
     return out
 
 
@@ -727,7 +711,7 @@ def parse_xlsx(path: str) -> dict:
             lines.append(" | ".join(str(cell).strip() for cell in row))
         full_text.append("\n".join(lines))
 
-    out["text"] = _clean_whitespace("\n\n".join(full_text).strip())
+    out["text"] = normalize_text("\n\n".join(full_text).strip())
     out["tables"] = sheets
     out["metadata"]["sheet_count"] = len(sheets)
     return out
@@ -742,7 +726,7 @@ def parse_rtf(path: str) -> dict:
     out = _make_base_result(path, "rtf")
     plain = _read_text_with_fallbacks(path, ("utf-8", "cp1251", "latin-1"))
     text = rtf_to_text(plain)
-    out["text"] = _clean_whitespace(text)
+    out["text"] = normalize_text(text)
     return out
 
 
@@ -760,7 +744,7 @@ def parse_doc(path: str) -> dict:
     )
     if r.returncode != 0:
         raise ValueError(f"textutil failed: {r.stderr or r.stdout}")
-    out["text"] = _clean_whitespace(r.stdout)
+    out["text"] = normalize_text(r.stdout)
     out["metadata"]["converter"] = "textutil"
     return out
 
@@ -769,8 +753,6 @@ def _ensure_ocr_input_path(path: str, ext: str) -> tuple[str, str | None]:
     if ext != ".heic":
         return path, None
     fd, tmp_path = tempfile.mkstemp(suffix=".png")
-    import os
-
     os.close(fd)
     r = subprocess.run(["sips", "-s", "format", "png", path, "--out", tmp_path], capture_output=True, text=True)
     if r.returncode != 0:
@@ -802,7 +784,7 @@ def parse_image(path: str) -> dict:
             if t:
                 lines.append(t)
 
-    out["text"] = _clean_whitespace(postprocess_ocr_text("\n".join(lines)))
+    out["text"] = normalize_text(postprocess_ocr_text("\n".join(lines)))
     out["metadata"]["ocr_used"] = True
     out["metadata"]["ocr_engine"] = "paddleocr"
     out["metadata"]["ocr_pages"] = 1
